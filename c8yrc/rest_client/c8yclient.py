@@ -258,7 +258,6 @@ class CumulocityClient:
 
         else:
             logging.error(f'Error on retrieving device. Status Code {response.status_code}')
-
         return ext_id
 
     def upload_firmware(self, artifact_file_location, metadata_file_location):
@@ -272,9 +271,11 @@ class CumulocityClient:
             "restrictedToCCC": False,
         }
         try:
-            multiple_files = [('file', ('foo.mender', open(artifact_file_location, 'rb'), 'application-type')),
-             ('metadata', (metadata_file_location, open(metadata_file_location, 'rb'), 'application-type')),
-             ('requestDto', (json.dumps(_payload).encode('utf-8'), 'application/json'))]
+            artifact_file_name = os.path.basename(artifact_file_location)
+            metadata_file_name = os.path.basename(metadata_file_location)
+            multiple_files = [('file', (artifact_file_name, open(artifact_file_location, 'rb'), 'application/octet-stream')),
+             ('metadata', (metadata_file_name, open(metadata_file_location, 'rb'), 'application/octet-stream')),
+             ('requestDto', ('requestDto_name', json.dumps(_payload).encode('utf-8'), 'application/json'))]
         except FileNotFoundError as e:
             msg = 'artifact or metadata files not found'
             logging.error(msg)
@@ -283,6 +284,8 @@ class CumulocityClient:
         logging.debug(f'Response received: {response}')
         if response.status_code == 200:
             logging.info('firmware uploaded')
+        elif response.status_code == 202:
+            logging.info('firmware upload accepted')
         else:
             msg = f'unable to upload the image artifact: {response.content}'
             raise C8yException(msg, None)

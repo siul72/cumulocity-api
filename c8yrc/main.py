@@ -93,7 +93,7 @@ def start():
         handler.setFormatter(log_console_formatter)
 
     # Max 5 log files each 10 MB.
-    rotate_handler = RotatingFileHandler(filename=path / 'localproxy.log', maxBytes=10000000,
+    rotate_handler = RotatingFileHandler(filename=path / 'c8yclient.log', maxBytes=10000000,
                                          backupCount=5)
     rotate_handler.setFormatter(log_file_formatter)
     rotate_handler.setLevel(loglevel)
@@ -115,7 +115,6 @@ def start():
     #    print(help())
     host = os.environ.get('C8Y_HOST')
     device = os.environ.get('C8Y_DEVICE')
-
     extype = os.environ.get('C8Y_EXTYPE') if os.environ.get('C8Y_EXTYPE') is not None else 'c8y_Serial'
     config_name = os.environ.get('C8Y_CONFIG') if os.environ.get('C8Y_CONFIG') is not None else 'Passthrough'
     tenant = os.environ.get('C8Y_TENANT')
