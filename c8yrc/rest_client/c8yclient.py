@@ -3,7 +3,7 @@ import os
 import logging
 import sys
 import requests
-
+from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
 from c8yrc.rest_client.c8y_enterprise import C8yQueries, BlobRepository
 from c8yrc.rest_client.c8y_exception import C8yException
 
@@ -26,6 +26,14 @@ class CumulocityClient:
         if ignore_ssl_validate:
             self.session.verify = False
 
+    @staticmethod
+    def _progress_bar(monitor):
+        progress = int(monitor.bytes_read/monitor.len*20)
+        sys.stdout.write("\r[{}/{}] bytes |".format(monitor.bytes_read, monitor.len))
+        sys.stdout.write("{}>".format("=" * progress))
+        sys.stdout.write("{}|".format(" " * (20-progress)))
+        sys.stdout.flush()
+
     def _post_data(self, query, files):
         req_url = f'{self.url}{query}'
 
@@ -34,9 +42,12 @@ class CumulocityClient:
         else:
             headers = {'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN']}
 
-        # headers['content-type'] = 'multipart/form-data; boundary=ebf9f03029db4c2799ae16b5428b06bd'
         try:
-            response = self.session.post(url=req_url, headers=headers, files=files, verify=False)
+            encoder = MultipartEncoder(files)
+            monitor = MultipartEncoderMonitor(encoder, callback=self._progress_bar)
+            headers['Content-Type'] = monitor.content_type
+            # response = self.session.post(url=req_url, headers=headers, files=files, verify=False)
+            response = self.session.post(url=req_url, data=monitor, headers=headers, verify=False)
         except requests.exceptions.InvalidURL as e:
             raise C8yException(f'wrong url {req_url}',  e)
 
@@ -44,6 +55,8 @@ class CumulocityClient:
             logging.debug('200 Ok response')
         elif response.status_code == 401:
             logging.error('Not authorized')
+        elif response.status_code == 202:
+            logging.error('202 Accepted')
         else:
             logging.error(f'Server Error received, Status Code: {response.status_code}')
         return response
@@ -122,7 +135,7 @@ class CumulocityClient:
             'tfa_code': self.tfacode
         }
         logging.debug(f'Sending requests to {oauth_url}')
-        response = self.session.post(oauth_url,headers=headers, data=body)
+        response = self.session.post(oauth_url, headers=headers, data=body)
         if response.status_code == 200:
             logging.debug(f'Authentication successful. Tokens have been updated {self.session.cookies.get_dict()}!')
             os.environ['C8Y_TOKEN'] = self.session.cookies.get_dict()['authorization']
