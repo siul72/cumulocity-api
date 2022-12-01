@@ -12,6 +12,10 @@ from c8yrc.rest_client.c8yclient import CumulocityClient
 from c8yrc.tcp_socket.tcp_server import TCPServer
 from c8yrc.websocket_client.ws_client import WebsocketClient
 
+
+# VERSION = '0.0.12'  # First print version
+VERSION = '0.0.13'  # Configure progress bar
+
 PIDFILE = '/var/run/c8yrc'
 
 
@@ -234,6 +238,8 @@ def start():
     rotate_handler.setFormatter(log_formatter)
     logger.addHandler(rotate_handler)
 
+    logging.info(f'c8yrc version {VERSION}')
+
     parser = argparse.ArgumentParser(prog='main.py')
     subparsers = parser.add_subparsers()
     subparsers.required = True
@@ -284,6 +290,8 @@ def start():
     subparser.add_argument('-i', '--image', required=True, help='File location with image/firmware to upload')
     subparser.add_argument('-m', '--metadata', required=True,
                            help='File location with metadata in json format to upload')
+    subparser.add_argument('--progress', default=1, type=int,
+                           help='Define progress show in MB, if 0 hide progress. Default: 1')
 
     args = parser.parse_args()
 
@@ -301,6 +309,7 @@ def start():
         client = CumulocityClient(hostname=args.hostname, tenant=args.tenant,
                                   user=args.username, password=args.password)
         client.retrieve_token()
+        CumulocityClient.delta_progress = args.progress
         client.upload_firmware(artifact_file_location=args.image, metadata_file_location=args.metadata)
 
 

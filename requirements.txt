@@ -5,3 +5,4 @@ c8yrc>=0.0.10
 websocket>=0.2.1
 websocket-client>=1.4.2
 clint>=0.5.1
+requests_toolbelt>=0.9.1

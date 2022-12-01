@@ -10,6 +10,10 @@ from c8yrc.rest_client.c8y_exception import C8yException
 
 class CumulocityClient:
 
+    current_bytes = 0
+    delta_bytes = 0
+    delta_progress = 1
+
     def __init__(self, hostname: str, tenant: str, user: str, password: str, tfacode: str = '',
                  ignore_ssl_validate: bool = False):
         self.hostname = hostname
@@ -19,6 +23,7 @@ class CumulocityClient:
         self.tfacode = tfacode
         self.session = requests.Session()
         self.token = None
+
         if hostname.startswith('http'):
             self.url = hostname
         else:
@@ -28,6 +33,18 @@ class CumulocityClient:
 
     @staticmethod
     def _progress_bar(monitor):
+
+        if CumulocityClient.delta_progress == 0 and monitor.bytes_read < monitor.len:
+            return
+        CumulocityClient.delta_bytes = monitor.bytes_read - CumulocityClient.delta_bytes
+        # logging.info(f'delta bytes {CumulocityClient.delta_bytes}')
+        CumulocityClient.current_bytes = CumulocityClient.current_bytes + CumulocityClient.delta_bytes
+        CumulocityClient.delta_bytes = monitor.bytes_read
+        if CumulocityClient.current_bytes < (CumulocityClient.delta_progress * 1048576) and \
+                monitor.bytes_read < monitor.len:
+            return
+        CumulocityClient.delta_bytes = monitor.bytes_read
+        CumulocityClient.current_bytes = 0
         progress = int(monitor.bytes_read/monitor.len*20)
         sys.stdout.write("\r[{}/{}] bytes |".format(monitor.bytes_read, monitor.len))
         sys.stdout.write("{}>".format("=" * progress))
@@ -277,11 +294,11 @@ class CumulocityClient:
         _payload = {
             "repository": BlobRepository.AZURE,
             "description": "Uploaded by Jenkins",
-            "cabTicket": "Jenkins advice not to use Cab Advisory Boards",
+            "cabTicket": "Jenkins advice not to use Change Advisory Boards",
             "approvedBy": "jenkins@schindler.com",
             "canary": False,
             "restrictedToCPG": False,
-            "restrictedToCCC": False,
+            "restrictedToCCC": False
         }
         try:
             artifact_file_name = os.path.basename(artifact_file_location)
