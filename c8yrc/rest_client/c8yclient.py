@@ -53,12 +53,10 @@ class CumulocityClient:
 
     def _post_data(self, query, files):
         req_url = f'{self.url}{query}'
-
         if self.token:
             headers = {'Authorization': 'Bearer ' + self.token}
         else:
             headers = {'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN']}
-
         try:
             encoder = MultipartEncoder(files)
             monitor = MultipartEncoderMonitor(encoder, callback=self._progress_bar)
@@ -67,7 +65,6 @@ class CumulocityClient:
             response = self.session.post(url=req_url, data=monitor, headers=headers, verify=False)
         except requests.exceptions.InvalidURL as e:
             raise C8yException(f'wrong url {req_url}',  e)
-
         if response.status_code == 200:
             logging.debug('200 Ok response')
         elif response.status_code == 401:
@@ -108,7 +105,7 @@ class CumulocityClient:
         current_user_url = self.url + f'/user/currentUser'
         if self.token:
             headers = {'Content-Type': 'application/json',
-                       'Authorization': 'Bearer ' +self.token}
+                       'Authorization': 'Bearer ' + self.token}
         else:
             headers = {'Content-Type': 'application/json',
                         'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN'] }

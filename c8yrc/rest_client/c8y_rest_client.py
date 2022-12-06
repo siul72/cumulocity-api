@@ -5,9 +5,16 @@ import random
 import string
 import time
 import requests
+
+from c8yrc.proxy_thread import ProxyThread
 from c8yrc.rest_client.c8y_enterprise import Cube, SoftwareImage, CubeOperation
 from c8yrc.rest_client.c8y_exception import C8yException
 from c8yrc.rest_client.rest_constants import UPDATE_FIRMWARE_OPERATION_HEADER, C8YQueries, C8YOperationStatus
+from c8yrc.tcp_socket import TCPServer
+from c8yrc.websocket_client import WebsocketClient
+
+
+logging = logging.getLogger(__name__)
 
 
 class C8yRestClient(object):
@@ -21,6 +28,7 @@ class C8yRestClient(object):
             self.url = 'https://main.dm-zz-q.ioee10-cloud.com/'
         else:
             self.url = url
+        self.user = user
         self.session = requests.Session()
         self.session.verify = session_verify
         self.device_id = None
@@ -30,8 +38,11 @@ class C8yRestClient(object):
             self.tenant = tenant
         self.headers = None
         self.cy8_device = None
+        self.token = None
         self.ext_type = 'c8y_Serial'
         self.c8y_serial_number = c8y_serial_number
+        self.config_id = None
+        self.proxy_port = 2023
         self.start(user=user, password=password, tfacode=tfacode)
 
     def start(self, user: str, password: str, tfacode: int):
@@ -46,9 +57,10 @@ class C8yRestClient(object):
         self.validate_tenant_id()
         self.retrieve_token(user, password, tfacode)
         # os.environ['C8Y_TOKEN'] = self.session.cookies.get_dict()['authorization']
-        self.headers = {'Content-Type': 'application/json', 
+        self.headers = {'Content-Type': 'application/json',
                         'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN']}
         self.get_device_info()
+        self.config_id = self.get_config_id(self.cy8_device, 'PASSTHROUGH')
 
     def validate_tenant_id(self):
         """
@@ -280,6 +292,8 @@ class C8yRestClient(object):
         response = self.session.get(identity_url, headers=self.headers)
         if response.status_code != 200:
             raise C8yException(f'Error on {identity_url}. Status Code {response.status_code}', None)
+
+        # mor = json.loads(response.content.decode('utf-8'))
         self.cy8_device = Cube(response.text)
 
     def get_device_operation(self) -> CubeOperation:
@@ -308,6 +322,87 @@ class C8yRestClient(object):
             return None
         my_operation = CubeOperation(update_operations)
         return my_operation
+
+    def validate_remote_access_role(self, user_name):
+        """
+
+        :param user_name:
+        :return:
+        """
+        is_valid = False
+        current_user_url = self.url + C8YQueries.GET_CURRENT_USER
+        if self.token:
+            headers = {'Content-Type': 'application/json',
+                       'Authorization': 'Bearer ' + self.token}
+        else:
+            headers = {'Content-Type': 'application/json',
+                       'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN']}
+
+        response = self.session.get(current_user_url, headers=headers)
+        logging.debug(f'Response received: {response}')
+        if response.status_code == 200:
+            user = json.loads(response.content.decode('utf-8'))
+            effective_roles = user['effectiveRoles']
+            for role in effective_roles:
+                if 'ROLE_REMOTE_ACCESS_ADMIN' == role['id']:
+                    logging.debug(f'Remote Access Role assigned to User {user_name}!')
+                    is_valid = True
+                    break
+        else:
+            logging.error(f'Error retrieving User Data!')
+            is_valid = False
+        return is_valid
+
+    def start_proxy(self, port):
+
+        tcp_size = 32768
+        tcp_timeout = 0
+        script_mode = True
+        event = None
+        ignore_ssl_validate = True
+        reconnects = 3
+        device_id = self.device_id
+        config_id = self.config_id
+
+        is_authorized = self.validate_remote_access_role(self.user)
+        if not is_authorized:
+            msg = f'User {self.user} is not authorized to use Cloud Remote Access. Contact your Cumulocity Admin!'
+            logging.error(msg)
+            raise C8yException(msg, None)
+
+        websocket_client = WebsocketClient(host=self.url, tenant=self.tenant, config_id=config_id, device_id=device_id,
+                                           session=self.session, ignore_ssl_validate=ignore_ssl_validate, reconnects=reconnects)
+        wst = websocket_client.connect()
+        tcp_server = TCPServer(port, websocket_client, tcp_size, tcp_timeout, wst, script_mode, event)
+        websocket_client.tcp_server = tcp_server
+        self.my_thread = ProxyThread(tcp_server)
+        self.my_thread.start()
+
+    def stop_proxy(self):
+        self.my_thread.stop()
+        self.my_thread.join(timeout=30)
+
+    def get_config_id(self, mor, config):
+        access_list = mor.c8y_RemoteAccessList
+        device = mor.name
+        config_id = None
+        for remote_access in access_list:
+            if not remote_access['protocol'] == 'PASSTHROUGH':
+                continue
+            if remote_access['name'].lower() == config.lower():
+                config_id = remote_access['id']
+                logging.info(f'Using Configuration with Name "{config}" and Remote Port {remote_access["port"]}')
+                break
+        if not config_id:
+            msg = f'Provided config name "{config}" for "{device}" was not found or not of type "PASSTHROUGH"'
+            logging.error(msg)
+            raise C8yException(msg, None)
+        return config_id
+
+
+
+
+
 
 
 
