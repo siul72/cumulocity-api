@@ -134,7 +134,13 @@ Build wheel package:
 Check wheel package:
 
     twine check dist/*
-    
+
+Install locally
+
+
+    pip install -e .
+
+
 Upload package to test.pypi.org
 
     twine upload --repository-url https://test.pypi.org/legacy/ dist/*

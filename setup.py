@@ -18,8 +18,10 @@
 
 from setuptools import setup
 
+import c8yrc.main
+
 setup(name='c8yrc',
-      version='0.0.14',
+      version=c8yrc.main.VERSION,
       description='Cumulocity Rest Client',
 
       license='Apache v2',

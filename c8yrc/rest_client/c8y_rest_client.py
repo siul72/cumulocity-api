@@ -4,6 +4,8 @@ import logging
 import random
 import string
 import time
+import urllib
+
 import requests
 
 from c8yrc.proxy_thread import ProxyThread
@@ -31,6 +33,7 @@ class C8yRestClient(object):
         self.user = user
         self.session = requests.Session()
         self.session.verify = session_verify
+        self.my_thread = None
         self.device_id = None
         if tenant is None:
             self.tenant = 't2700'
@@ -370,8 +373,12 @@ class C8yRestClient(object):
             logging.error(msg)
             raise C8yException(msg, None)
 
-        websocket_client = WebsocketClient(host=self.url, tenant=self.tenant, config_id=config_id, device_id=device_id,
-                                           session=self.session, ignore_ssl_validate=ignore_ssl_validate, reconnects=reconnects)
+        parsed_url = urllib.parse.urlparse(self.url)
+        logging.debug(f'{parsed_url} Host name: {parsed_url.netloc}')
+
+        websocket_client = WebsocketClient(host=parsed_url.netloc, tenant=self.tenant, config_id=config_id, device_id=device_id,
+                                           session=self.session, ignore_ssl_validate=ignore_ssl_validate,
+                                           reconnects=reconnects, token=self.token)
         wst = websocket_client.connect()
         tcp_server = TCPServer(port, websocket_client, tcp_size, tcp_timeout, wst, script_mode, event)
         websocket_client.tcp_server = tcp_server
@@ -379,8 +386,9 @@ class C8yRestClient(object):
         self.my_thread.start()
 
     def stop_proxy(self):
-        self.my_thread.stop()
-        self.my_thread.join(timeout=30)
+        if self.my_thread:
+            self.my_thread.stop()
+            self.my_thread.join(timeout=30)
 
     def get_config_id(self, mor, config):
         access_list = mor.c8y_RemoteAccessList

@@ -1,5 +1,7 @@
 import logging
 import threading
+
+import certifi
 import websocket
 import ssl
 logging = logging.getLogger(__name__)
@@ -7,7 +9,7 @@ logging = logging.getLogger(__name__)
 
 class WebsocketClient(threading.Thread):
 
-    def __init__(self, host, tenant, config_id, device_id, session, ignore_ssl_validate=False, reconnects=5):
+    def __init__(self, host, tenant, config_id, device_id, session, token, ignore_ssl_validate=False, reconnects=5):
         self.host = host
         self.tenant = tenant
         self.config_id = config_id
@@ -23,8 +25,10 @@ class WebsocketClient(threading.Thread):
         self.reconnect_counter = 0
         self.ignore_ssl_validate = ignore_ssl_validate
         self.max_reconnects = reconnects
+        self.token = token
 
     def connect(self):
+
         self._ws_open_event = threading.Event()
         if self.host.startswith('https'):
             self.host = self.host.replace('https', 'wss')
@@ -32,7 +36,7 @@ class WebsocketClient(threading.Thread):
             self.host = self.host.replace('http', 'wss')
         elif not self.host.startswith('wss://'):
             self.host = f'wss://{self.host}'
-        url = f'{self.host}service/remoteaccess/client/{self.device_id}/configurations/{self.config_id}'
+        url = f'{self.host}/service/remoteaccess/client/{self.device_id}/configurations/{self.config_id}'
         logging.info(f'Connecting to WebSocket with URL {url} ...')
         headers = {'Content-Type': 'application/json', 'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN']}
         cookies = self.session.cookies.get_dict()
@@ -45,6 +49,9 @@ class WebsocketClient(threading.Thread):
         web_socket_kwargs = {'ping_interval': 10, 'ping_timeout': 7}
         if self.ignore_ssl_validate:
             web_socket_kwargs['sslopt'] = {'cert_reqs': ssl.CERT_NONE}
+        else:
+            web_socket_kwargs["sslopt"] = {"ca_certs": certifi.where()}
+
         self.wst = threading.Thread(target=self.web_socket.run_forever, kwargs=web_socket_kwargs)
         self.wst.daemon = True
         self.wst.name = f'WSTunnelThread-{self.config_id}'

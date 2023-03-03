@@ -14,7 +14,7 @@ from c8yrc.websocket_client.ws_client import WebsocketClient
 
 
 # VERSION = '0.0.12'  # First print version
-VERSION = '0.0.13'  # Configure progress bar
+VERSION = '0.0.16'  # bug fixing
 
 PIDFILE = '/var/run/c8yrc'
 
@@ -25,6 +25,22 @@ class ExitCommand(Exception):
 
 def signal_handler(signal, frame):
     raise ExitCommand()
+
+
+def validate_c8y_proxy(client, tenant, device, extype):
+
+    if not client.validate_tenant_id():
+        logging.warning(f'WARNING: Tenant ID {tenant} does not exist.')
+    client.retrieve_token()
+    mor = client.read_mo(device, extype)
+    # client.retrieve_token(user, password, tfacode)
+    # os.environ['C8Y_TOKEN'] = self.session.cookies.get_dict()['authorization']
+    client.headers = {'Content-Type': 'application/json',
+                'X-XSRF-TOKEN': client.session.cookies.get_dict()['XSRF-TOKEN']}
+
+    client.device_id = client.get_device_id(mor)
+    client.config_id = client.get_config_id(mor, 'PASSTHROUGH')
+    # config_id = client.get_config_id(mor, config_name)
 
 
 def prepare_c8y_proxy(host, device, extype, config_name, tenant, user, password,
@@ -40,24 +56,15 @@ def prepare_c8y_proxy(host, device, extype, config_name, tenant, user, password,
         else:
             logging.warning(f'WARNING: Killing existing instances is only support when "--use-pid" is used.')
     client = CumulocityClient(host, tenant, user, password, tfacode, ignore_ssl_validate)
-    tenant_id_valid = client.validate_tenant_id()
-    if tenant_id_valid is not None:
-        logging.warning(f'WARNING: Tenant ID {tenant} does not exist. Try using this Tenant ID {tenant_id_valid} next time!')
-    session = None
-    if token:
-        client.validate_token()
-    else:
-        session = client.retrieve_token()
-    mor = client.read_mo(device, extype)
-    config_id = client.get_config_id(mor, config_name)
-    device_id = client.get_device_id(mor)
-
+    validate_c8y_proxy(client, tenant, device, extype)
     is_authorized = client.validate_remote_access_role()
     if not is_authorized:
         logging.error(f'User {user} is not authorized to use Cloud Remote Access. Contact your Cumulocity Admin!')
         return None
-    websocket_client = WebsocketClient(host=host, tenant=tenant, config_id=config_id, device_id=device_id,
-                                       session=session, ignore_ssl_validate=ignore_ssl_validate, reconnects=reconnects)
+    websocket_client = WebsocketClient(host=host, tenant=tenant, config_id=client.config_id, device_id=client.device_id,
+                                       session=client.session, ignore_ssl_validate=ignore_ssl_validate,
+                                       reconnects=reconnects,
+                                       token=token)
 
     wst = websocket_client.connect()
     tcp_server = TCPServer(port, websocket_client, tcp_size, tcp_timeout, wst, script_mode, event)
@@ -300,7 +307,6 @@ def start():
         token = os.environ.get('C8Y_TOKEN')
         if args.verbose:
             verbose_log()
-
         s = prepare_c8y_proxy(args.hostname, args.device, args.extype, args.config, args.tenant, args.username,
                               args.password, token, args.port, args.tfacode, args.usepid, args.kill,
                               args.ignore_ssl_validate, args.reconnects, args.tcpsize, args.tcptimeout, args.scriptmode)

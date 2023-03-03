@@ -23,6 +23,9 @@ class CumulocityClient:
         self.tfacode = tfacode
         self.session = requests.Session()
         self.token = None
+        self.config_id = None
+        self.device_id = None
+        self.headers = None
 
         if hostname.startswith('http'):
             self.url = hostname
@@ -79,7 +82,7 @@ class CumulocityClient:
         pass
 
     def validate_tenant_id(self):
-        tenant_id = None
+        tenant_id_flag = False
         current_user_url = self.url + C8yQueries.GET_LOGIN_OPTIONS
         headers = {}
         response = self.session.get(current_user_url, headers=headers)
@@ -94,11 +97,11 @@ class CumulocityClient:
                         logging.debug(f'Wrong Tenant ID {self.tenant}, Correct Tenant ID: {tenant_id}')
                         self.tenant = tenant_id
                     else:
-                        tenant_id = None
+                        tenant_id_flag = True
                     break
         else:
             logging.error(f'Error validating Tenant ID!')
-        return tenant_id
+        return tenant_id_flag
 
     def validate_remote_access_role(self):
         is_valid = False
@@ -155,10 +158,10 @@ class CumulocityClient:
             os.environ['C8Y_TOKEN'] = self.session.cookies.get_dict()['authorization']
         elif response.status_code == 401:
             logging.error(f'User {self.user} is not authorized to access Tenant {self.tenant} or TFA-Code is invalid.')
-            sys.exit(1)
+
         else:
             logging.error(f'Server Error received for User {self.user} and Tenant {self.tenant}. Status Code: {response.status_code}')
-            sys.exit(1)
+
         return self.session
 
     def read_ext_Id(self, device, extype):
@@ -230,13 +233,14 @@ class CumulocityClient:
             return mor
 
     def get_config_id(self, mor, config):
+        config = config.lower()
         access_list = mor['c8y_RemoteAccessList']
         device = mor['name']
         config_id = None
         for remote_access in access_list:
             if not remote_access['protocol'] == 'PASSTHROUGH':
                 continue
-            if config and remote_access['name'] == config:
+            if config and remote_access['name'].lower() == config:
                 config_id = remote_access['id']
                 logging.info(f'Using Configuration with Name "{config}" and Remote Port {remote_access["port"]}')
                 break
