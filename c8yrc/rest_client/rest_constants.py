@@ -43,3 +43,4 @@ class C8YQueries:
     POST_OPERATION = 'devicecontrol/operations'
     GET_DEVICE_ID_BY_ESN = 'identity/externalIds/{}/{}'
     GET_DEVICE_INFO_BY_DEV_ID = 'inventory/managedObjects/{}'
+    GET_CURRENT_USER = 'user/currentUser'
