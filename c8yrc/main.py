@@ -1,3 +1,4 @@
+import argparse
 import getopt
 import logging
 import os
@@ -11,7 +12,11 @@ from c8yrc.rest_client.c8yclient import CumulocityClient
 from c8yrc.tcp_socket.tcp_server import TCPServer
 from c8yrc.websocket_client.ws_client import WebsocketClient
 
-PIDFILE = '/var/run/c8yrc/c8yrc'
+
+# VERSION = '0.0.12'  # First print version
+VERSION = '0.0.16'  # bug fixing
+
+PIDFILE = '/var/run/c8yrc'
 
 
 class ExitCommand(Exception):
@@ -20,6 +25,22 @@ class ExitCommand(Exception):
 
 def signal_handler(signal, frame):
     raise ExitCommand()
+
+
+def validate_c8y_proxy(client, tenant, device, extype):
+
+    if not client.validate_tenant_id():
+        logging.warning(f'WARNING: Tenant ID {tenant} does not exist.')
+    client.retrieve_token()
+    mor = client.read_mo(device, extype)
+    # client.retrieve_token(user, password, tfacode)
+    # os.environ['C8Y_TOKEN'] = self.session.cookies.get_dict()['authorization']
+    client.headers = {'Content-Type': 'application/json',
+                'X-XSRF-TOKEN': client.session.cookies.get_dict()['XSRF-TOKEN']}
+
+    client.device_id = client.get_device_id(mor)
+    client.config_id = client.get_config_id(mor, 'PASSTHROUGH')
+    # config_id = client.get_config_id(mor, config_name)
 
 
 def prepare_c8y_proxy(host, device, extype, config_name, tenant, user, password,
@@ -35,145 +56,20 @@ def prepare_c8y_proxy(host, device, extype, config_name, tenant, user, password,
         else:
             logging.warning(f'WARNING: Killing existing instances is only support when "--use-pid" is used.')
     client = CumulocityClient(host, tenant, user, password, tfacode, ignore_ssl_validate)
-    tenant_id_valid = client.validate_tenant_id()
-    if tenant_id_valid is not None:
-        logging.warning(f'WARNING: Tenant ID {tenant} does not exist. Try using this Tenant ID {tenant_id_valid} next time!')
-    session = None
-    if token:
-        client.validate_token()
-    else:
-        session = client.retrieve_token()
-    mor = client.read_mo(device, extype)
-    config_id = client.get_config_id(mor, config_name)
-    device_id = client.get_device_id(mor)
-
+    validate_c8y_proxy(client, tenant, device, extype)
     is_authorized = client.validate_remote_access_role()
     if not is_authorized:
         logging.error(f'User {user} is not authorized to use Cloud Remote Access. Contact your Cumulocity Admin!')
         return None
-    websocket_client = WebsocketClient(
-        host, tenant, user, password, config_id, device_id, session, token, ignore_ssl_validate, reconnects)
+    websocket_client = WebsocketClient(host=host, tenant=tenant, config_id=client.config_id, device_id=client.device_id,
+                                       session=client.session, ignore_ssl_validate=ignore_ssl_validate,
+                                       reconnects=reconnects,
+                                       token=token)
+
     wst = websocket_client.connect()
     tcp_server = TCPServer(port, websocket_client, tcp_size, tcp_timeout, wst, script_mode, event)
     websocket_client.tcp_server = tcp_server
     return tcp_server
-
-
-def start_c8y_proxy(tcp_server, use_pid):
-    try:
-        tcp_server.start()
-    except Exception as ex:
-        logging.error(f'Error on TCP-Server {ex}')
-    finally:
-        if use_pid:
-            clean_pid_file(None)
-        tcp_server.stop()
-
-
-def start():
-    signal.signal(signal.SIGUSR1, signal_handler)
-    home = expanduser('~')
-    path = pathlib.Path(home + '/.c8yrc')
-    loglevel = logging.INFO
-    path.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger()
-    logger.setLevel(loglevel)
-    log_file_formatter = logging.Formatter(
-        '%(asctime)s %(threadName)s %(levelname)s %(name)s %(message)s')
-    log_console_formatter = logging.Formatter('%(message)s')
-
-    # Set default log format
-    if len(logger.handlers) == 0:
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_console_formatter)
-        console_handler.setLevel(loglevel)
-        logger.addHandler(console_handler)
-    else:
-        handler = logger.handlers[0]
-        handler.setFormatter(log_console_formatter)
-
-    # Max 5 log files each 10 MB.
-    rotate_handler = RotatingFileHandler(filename=path / 'localproxy.log', maxBytes=10000000,
-                                         backupCount=5)
-    rotate_handler.setFormatter(log_file_formatter)
-    rotate_handler.setLevel(loglevel)
-    # Log to Rotating File
-    logger.addHandler(rotate_handler)
-    opts = None
-    try:
-        opts, args = getopt.getopt(sys.argv[1:], "h:d:c:t:u:p:kvs",
-                                   ["help", "hostname=", "device=", "extype=", "config=", "tenant=", "username=",
-                                    "password=", "tfacode=", "port=", "kill", "tcpsize=", "tcptimeout=", "verbose",
-                                    "scriptmode",
-                                    "ignore-ssl-validate", "use-pid", "reconnects="])
-    except getopt.GetoptError as e:
-        logging.error(e)
-        help()
-
-    logging.debug(f'OPTIONS: {opts}')
-    # if len(opts) == 0:
-    #    print(help())
-    host = os.environ.get('C8Y_HOST')
-    device = os.environ.get('C8Y_DEVICE')
-
-    extype = os.environ.get('C8Y_EXTYPE') if os.environ.get('C8Y_EXTYPE') is not None else 'c8y_Serial'
-    config_name = os.environ.get('C8Y_CONFIG') if os.environ.get('C8Y_CONFIG') is not None else 'Passthrough'
-    tenant = os.environ.get('C8Y_TENANT')
-    user = os.environ.get('C8Y_USER')
-    password = os.environ.get('C8Y_PASSWORD')
-    tcp_size = int(os.environ.get('C8Y_TCPSIZE')) if os.environ.get('C8Y_TCPSIZE') is not None else 32768
-    tcp_timeout = int(os.environ.get('C8Y_TCPTIMEOUT')) if os.environ.get('C8Y_TCPTIMEOUT') is not None else 0
-    port = int(os.environ.get('C8Y_PORT')) if os.environ.get('C8Y_PORT') is not None else 2222
-    token = os.environ.get('C8Y_TOKEN')
-    tfacode = None
-    script_mode = False
-    ignore_ssl_validate = False
-    use_pid = False
-    kill_instances = False
-    reconnects = 5
-    for option_key, option_value in opts:
-        if option_key in ('-h', '--hostname'):
-            host = option_value
-        elif option_key in ('-d', '--device'):
-            device = option_value
-        elif option_key in '--extype':
-            extype = option_value
-        elif option_key in ('-c', '--config'):
-            config_name = option_value
-        elif option_key in ('-t', '--tenant'):
-            tenant = option_value
-        elif option_key in ('-u', '--username'):
-            user = option_value
-        elif option_key in ('-p', '--password'):
-            password = option_value
-        elif option_key in ['--tfacode']:
-            tfacode = option_value
-        elif option_key in ['--port']:
-            port = int(option_value)
-        elif option_key in ['-k', '--kill']:
-            kill_instances = True
-        elif option_key in ['--tcpsize']:
-            tcp_size = int(option_value)
-        elif option_key in ['--tcptimeout']:
-            tcp_timeout = int(option_value)
-        elif option_key in ['-v', '--verbose']:
-            verbose_log()
-        elif option_key in ['-s', '--scriptmode']:
-            script_mode = True
-        elif option_key in ['--ignore-ssl-validate']:
-            ignore_ssl_validate = True
-        elif option_key in ['--use-pid']:
-            use_pid = True
-        elif option_key in ['--reconnects']:
-            reconnects = int(option_value)
-        elif option_key in ['--help']:
-            help()
-
-    s = prepare_c8y_proxy(host, device, extype, config_name, tenant, user, password,
-                          token, port, tfacode, use_pid, kill_instances, ignore_ssl_validate, reconnects,
-                          tcp_size, tcp_timeout, script_mode)
-    start_c8y_proxy(s, use_pid)
-    sys.exit(0)
 
 
 def verbose_log():
@@ -289,11 +185,6 @@ def validate_parameter(host, device, extpye, config_name, tenant, user, password
         sys.exit(1)
 
 
-def help():
-    print(_help_message())
-    sys.exit(2)
-
-
 def _help_message() -> str:
     return str('Usage: c8yrc [params]\n'
                '\n'
@@ -317,6 +208,116 @@ def _help_message() -> str:
                ' --use-pid              OPTIONAL, Will create a PID-File in /var/run/c8yrc to store all Processes currently running.\n'
                ' --reconnects           OPTIONAL, The number of reconnects to the Cloud Remote Service. 0 for infinite reconnects. Default: 5'
                '\n')
+
+
+def start_c8y_proxy(tcp_server, use_pid):
+    try:
+        tcp_server.start()
+    except Exception as ex:
+        logging.error(f'Error on TCP-Server {ex}')
+    finally:
+        if use_pid:
+            clean_pid_file(None)
+        tcp_server.stop()
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected, got {}'.format(v))
+
+
+def start():
+    signal.signal(signal.SIGUSR1, signal_handler)
+    loglevel = logging.INFO
+    logger = logging.getLogger()
+    logger.setLevel(loglevel)
+    log_formatter = logging.Formatter('%(asctime)s %(threadName)s %(levelname)s %(name)s %(message)s')
+    my_ch = logging.StreamHandler(sys.stdout)
+    my_ch.setFormatter(log_formatter)
+    logger.addHandler(my_ch)
+    # Max 5 log files each 10 MB.
+    rotate_handler = RotatingFileHandler(filename='c8yclient.log', maxBytes=(1048576 * 5), backupCount=5)
+    rotate_handler.setFormatter(log_formatter)
+    logger.addHandler(rotate_handler)
+
+    logging.info(f'c8yrc version {VERSION}')
+
+    parser = argparse.ArgumentParser(prog='main.py')
+    subparsers = parser.add_subparsers()
+    subparsers.required = True
+    subparsers.dest = 'command'
+    # Proxy command
+    subparser = subparsers.add_parser("PROXY", help="Start C8Y Proxy")
+    subparser.add_argument('--hostname', required=True, help="the Cumulocity Hostname")
+    subparser.add_argument('-d', '--device', required=True, help='the Device Name (ext. Id of Cumulocity)')
+    subparser.add_argument('--extype', default='c8y_Serial', help='the external Id Type. Default: "c8y_Serial"')
+    subparser.add_argument('-c', '--config', default='Passthrough',
+                           help='the name of the C8Y Remote Access Configuration. Default: "Passthrough"')
+    subparser.add_argument('-t', '--tenant', help='the tenant Id of Cumulocity')
+    subparser.add_argument('-u', '--username', help='the username of Cumulocity')
+    subparser.add_argument('-p', '--password', help='the password of Cumulocity')
+    subparser.add_argument('--tfacode', help='the TFA Code when an user with the Option "TFA enabled" is used')
+    subparser.add_argument('--port', nargs='?', const=2222, type=int,
+                           help='the TCP Port which should be opened. Default: 2222')
+    subparser.add_argument('-k', '--kill', type=str2bool, action='store',
+                            default='True', nargs='?', help='kills all existing processes of c8yrc]:')
+    subparser.add_argument('--tcpsize', nargs='?', default=32768, type=int, help='the TCP Package Size. Default: 32768')
+    subparser.add_argument('--tcptimeout', nargs='?', default=0, type=int,
+                           help='Timeout in sec. for inactivity. Can be activated with values > 0. Default: Deactivated')
+    subparser.add_argument('-v', '--verbose', type=str2bool, action='store',
+                           default='False', nargs='?',
+                           help='Print Debug Information into the Logs and Console when set.')
+    subparser.add_argument('-s', '--scriptmode', type=str2bool, action='store',
+                           default='True', nargs='?',
+                           help='Stops the TCP Server after first connection. No automatic restart!')
+    subparser.add_argument('--ignore_ssl_validate', type=str2bool, action='store',
+                           default='True', nargs='?',
+                           help='Ignore Validation for SSL Certificates while connecting to Websocket')
+    subparser.add_argument('--usepid', type=str2bool, action='store',
+                           default='False', nargs='?',
+                           help='Will create a PID-File in /var/run/c8yrc to store all Processes currently running.')
+    subparser.add_argument('--reconnects', default=5, type=int,
+                    help='The number of reconnects to the Cloud Remote Service. 0 for infinite reconnects. Default: 5')
+
+    # REST Command
+    subparser = subparsers.add_parser("UPLOAD", help="Upload Image to Cumulocity")
+    subparser.add_argument('--hostname', required=True, help="the Cumulocity Hostname")
+    subparser.add_argument('-t', '--tenant', help='the tenant Id of Cumulocity')
+    subparser.add_argument('-u', '--username', required=True, help='the username of Cumulocity')
+    subparser.add_argument('-p', '--password', help='the password of Cumulocity')
+    subparser.add_argument('--tfacode', help='the TFA Code when an user with the Option "TFA enabled" is used')
+    subparser.add_argument('--ignore-ssl-validate', type=str2bool, action='store',
+                           default='True', nargs='?',
+                           help='Ignore Validation for SSL Certificates while connecting to Websocket')
+    subparser.add_argument('-i', '--image', required=True, help='File location with image/firmware to upload')
+    subparser.add_argument('-m', '--metadata', required=True,
+                           help='File location with metadata in json format to upload')
+    subparser.add_argument('--progress', default=1, type=int,
+                           help='Define progress show in MB, if 0 hide progress. Default: 1')
+
+    args = parser.parse_args()
+
+    if args.command == 'PROXY':
+        token = os.environ.get('C8Y_TOKEN')
+        if args.verbose:
+            verbose_log()
+        s = prepare_c8y_proxy(args.hostname, args.device, args.extype, args.config, args.tenant, args.username,
+                              args.password, token, args.port, args.tfacode, args.usepid, args.kill,
+                              args.ignore_ssl_validate, args.reconnects, args.tcpsize, args.tcptimeout, args.scriptmode)
+        start_c8y_proxy(s, args.usepid)
+
+    elif args.command == 'UPLOAD':
+        client = CumulocityClient(hostname=args.hostname, tenant=args.tenant,
+                                  user=args.username, password=args.password)
+        client.retrieve_token()
+        CumulocityClient.delta_progress = args.progress
+        client.upload_firmware(artifact_file_location=args.image, metadata_file_location=args.metadata)
 
 
 if __name__ == '__main__':

@@ -3,12 +3,16 @@ import os
 import logging
 import sys
 import requests
-
+from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
 from c8yrc.rest_client.c8y_enterprise import C8yQueries, BlobRepository
 from c8yrc.rest_client.c8y_exception import C8yException
 
 
 class CumulocityClient:
+
+    current_bytes = 0
+    delta_bytes = 0
+    delta_progress = 1
 
     def __init__(self, hostname: str, tenant: str, user: str, password: str, tfacode: str = '',
                  ignore_ssl_validate: bool = False):
@@ -19,6 +23,10 @@ class CumulocityClient:
         self.tfacode = tfacode
         self.session = requests.Session()
         self.token = None
+        self.config_id = None
+        self.device_id = None
+        self.headers = None
+
         if hostname.startswith('http'):
             self.url = hostname
         else:
@@ -26,24 +34,46 @@ class CumulocityClient:
         if ignore_ssl_validate:
             self.session.verify = False
 
+    @staticmethod
+    def _progress_bar(monitor):
+
+        if CumulocityClient.delta_progress == 0 and monitor.bytes_read < monitor.len:
+            return
+        CumulocityClient.delta_bytes = monitor.bytes_read - CumulocityClient.delta_bytes
+        # logging.info(f'delta bytes {CumulocityClient.delta_bytes}')
+        CumulocityClient.current_bytes = CumulocityClient.current_bytes + CumulocityClient.delta_bytes
+        CumulocityClient.delta_bytes = monitor.bytes_read
+        if CumulocityClient.current_bytes < (CumulocityClient.delta_progress * 1048576) and \
+                monitor.bytes_read < monitor.len:
+            return
+        CumulocityClient.delta_bytes = monitor.bytes_read
+        CumulocityClient.current_bytes = 0
+        progress = int(monitor.bytes_read/monitor.len*20)
+        sys.stdout.write("\r[{}/{}] bytes |".format(monitor.bytes_read, monitor.len))
+        sys.stdout.write("{}>".format("=" * progress))
+        sys.stdout.write("{}|".format(" " * (20-progress)))
+        sys.stdout.flush()
+
     def _post_data(self, query, files):
         req_url = f'{self.url}{query}'
-
         if self.token:
             headers = {'Authorization': 'Bearer ' + self.token}
         else:
             headers = {'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN']}
-
-        # headers['content-type'] = 'multipart/form-data; boundary=ebf9f03029db4c2799ae16b5428b06bd'
         try:
-            response = self.session.post(url=req_url, headers=headers, files=files, verify=False)
+            encoder = MultipartEncoder(files)
+            monitor = MultipartEncoderMonitor(encoder, callback=self._progress_bar)
+            headers['Content-Type'] = monitor.content_type
+            # response = self.session.post(url=req_url, headers=headers, files=files, verify=False)
+            response = self.session.post(url=req_url, data=monitor, headers=headers, verify=False)
         except requests.exceptions.InvalidURL as e:
             raise C8yException(f'wrong url {req_url}',  e)
-
         if response.status_code == 200:
             logging.debug('200 Ok response')
         elif response.status_code == 401:
             logging.error('Not authorized')
+        elif response.status_code == 202:
+            logging.error('202 Accepted')
         else:
             logging.error(f'Server Error received, Status Code: {response.status_code}')
         return response
@@ -52,7 +82,7 @@ class CumulocityClient:
         pass
 
     def validate_tenant_id(self):
-        tenant_id = None
+        tenant_id_flag = False
         current_user_url = self.url + C8yQueries.GET_LOGIN_OPTIONS
         headers = {}
         response = self.session.get(current_user_url, headers=headers)
@@ -67,18 +97,18 @@ class CumulocityClient:
                         logging.debug(f'Wrong Tenant ID {self.tenant}, Correct Tenant ID: {tenant_id}')
                         self.tenant = tenant_id
                     else:
-                        tenant_id = None
+                        tenant_id_flag = True
                     break
         else:
             logging.error(f'Error validating Tenant ID!')
-        return tenant_id
+        return tenant_id_flag
 
     def validate_remote_access_role(self):
         is_valid = False
         current_user_url = self.url + f'/user/currentUser'
         if self.token:
             headers = {'Content-Type': 'application/json',
-                       'Authorization': 'Bearer ' +self.token}
+                       'Authorization': 'Bearer ' + self.token}
         else:
             headers = {'Content-Type': 'application/json',
                         'X-XSRF-TOKEN': self.session.cookies.get_dict()['XSRF-TOKEN'] }
@@ -122,16 +152,16 @@ class CumulocityClient:
             'tfa_code': self.tfacode
         }
         logging.debug(f'Sending requests to {oauth_url}')
-        response = self.session.post(oauth_url,headers=headers, data=body)
+        response = self.session.post(oauth_url, headers=headers, data=body)
         if response.status_code == 200:
             logging.debug(f'Authentication successful. Tokens have been updated {self.session.cookies.get_dict()}!')
             os.environ['C8Y_TOKEN'] = self.session.cookies.get_dict()['authorization']
         elif response.status_code == 401:
             logging.error(f'User {self.user} is not authorized to access Tenant {self.tenant} or TFA-Code is invalid.')
-            sys.exit(1)
+
         else:
             logging.error(f'Server Error received for User {self.user} and Tenant {self.tenant}. Status Code: {response.status_code}')
-            sys.exit(1)
+
         return self.session
 
     def read_ext_Id(self, device, extype):
@@ -203,13 +233,14 @@ class CumulocityClient:
             return mor
 
     def get_config_id(self, mor, config):
+        config = config.lower()
         access_list = mor['c8y_RemoteAccessList']
         device = mor['name']
         config_id = None
         for remote_access in access_list:
             if not remote_access['protocol'] == 'PASSTHROUGH':
                 continue
-            if config and remote_access['name'] == config:
+            if config and remote_access['name'].lower() == config:
                 config_id = remote_access['id']
                 logging.info(f'Using Configuration with Name "{config}" and Remote Port {remote_access["port"]}')
                 break
@@ -258,23 +289,24 @@ class CumulocityClient:
 
         else:
             logging.error(f'Error on retrieving device. Status Code {response.status_code}')
-
         return ext_id
 
     def upload_firmware(self, artifact_file_location, metadata_file_location):
         _payload = {
             "repository": BlobRepository.AZURE,
             "description": "Uploaded by Jenkins",
-            "cabTicket": "Jenkins advice not to use Cab Advisory Boards",
+            "cabTicket": "Jenkins advice not to use Change Advisory Boards",
             "approvedBy": "jenkins@schindler.com",
             "canary": False,
             "restrictedToCPG": False,
-            "restrictedToCCC": False,
+            "restrictedToCCC": False
         }
         try:
-            multiple_files = [('file', ('foo.mender', open(artifact_file_location, 'rb'), 'application-type')),
-             ('metadata', (metadata_file_location, open(metadata_file_location, 'rb'), 'application-type')),
-             ('requestDto', (json.dumps(_payload).encode('utf-8'), 'application/json'))]
+            artifact_file_name = os.path.basename(artifact_file_location)
+            metadata_file_name = os.path.basename(metadata_file_location)
+            multiple_files = [('file', (artifact_file_name, open(artifact_file_location, 'rb'), 'application/octet-stream')),
+             ('metadata', (metadata_file_name, open(metadata_file_location, 'rb'), 'application/octet-stream')),
+             ('requestDto', ('requestDto_name', json.dumps(_payload).encode('utf-8'), 'application/json'))]
         except FileNotFoundError as e:
             msg = 'artifact or metadata files not found'
             logging.error(msg)
@@ -283,6 +315,8 @@ class CumulocityClient:
         logging.debug(f'Response received: {response}')
         if response.status_code == 200:
             logging.info('firmware uploaded')
+        elif response.status_code == 202:
+            logging.info('firmware upload accepted')
         else:
             msg = f'unable to upload the image artifact: {response.content}'
             raise C8yException(msg, None)

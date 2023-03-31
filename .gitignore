@@ -155,4 +155,4 @@ mender/docker-device/mender_output
 .devcontainer
 
 # Local python tests
-c8yrc/rest_client/private_test.py
+c8yrc/private_test.py
