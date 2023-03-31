@@ -9,7 +9,9 @@ logging = logging.getLogger(__name__)
 
 class WebsocketClient(threading.Thread):
 
-    def __init__(self, host, tenant, config_id, device_id, session, token, ignore_ssl_validate=False, reconnects=5):
+    def __init__(self, host, tenant, config_id, device_id, session, token, script_mode, ignore_ssl_validate=False,
+                 reconnects=5):
+        super().__init__()
         self.host = host
         self.tenant = tenant
         self.config_id = config_id
@@ -26,6 +28,11 @@ class WebsocketClient(threading.Thread):
         self.ignore_ssl_validate = ignore_ssl_validate
         self.max_reconnects = reconnects
         self.token = token
+        if script_mode:
+            logging.info(f'script mode {script_mode} =  no reconnection')
+            self.trigger_reconnect = False
+        else:
+            logging.info(f'script mode {script_mode}')
 
     def connect(self):
 
@@ -119,7 +126,7 @@ class WebsocketClient(threading.Thread):
             self.tcp_server.stop_connection()
 
         if self.trigger_reconnect and self.reconnect_counter < self.max_reconnects:
-            logging.info(f'Reconnect with counter {self.reconnect_counter}')
+            logging.info(f' {self.trigger_reconnect} Reconnect with counter {self.reconnect_counter}<{self.max_reconnects}')
             self.reconnect()
         #else:
         #    os.kill(os.getpid(), signal.SIGUSR1)

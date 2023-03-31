@@ -376,9 +376,10 @@ class C8yRestClient(object):
         parsed_url = urllib.parse.urlparse(self.url)
         logging.debug(f'{parsed_url} Host name: {parsed_url.netloc}')
 
-        websocket_client = WebsocketClient(host=parsed_url.netloc, tenant=self.tenant, config_id=config_id, device_id=device_id,
+        websocket_client = WebsocketClient(host=parsed_url.netloc, tenant=self.tenant, config_id=config_id,
+                                           device_id=device_id,
                                            session=self.session, ignore_ssl_validate=ignore_ssl_validate,
-                                           reconnects=reconnects, token=self.token)
+                                           reconnects=reconnects, token=self.token, script_mode=script_mode)
         wst = websocket_client.connect()
         tcp_server = TCPServer(port, websocket_client, tcp_size, tcp_timeout, wst, script_mode, event)
         websocket_client.tcp_server = tcp_server
